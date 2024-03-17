@@ -7,7 +7,13 @@ import {
     Plugin,
     PluginSettingTab,
     Setting,
+    TAbstractFile,
+    WorkspaceLeaf,
 } from "obsidian";
+import {
+    PERIODIC_NOTES_VIEW_TYPE,
+    PeriodicNotesView,
+} from "./PeriodicNotesView";
 
 // Remember to rename these classes and interfaces!
 
@@ -19,75 +25,88 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
     mySetting: "default",
 };
 
-export default class ObsidianPeriodicNotesView extends Plugin {
+const DAILY_FOLDER_PATH = "daily";
+const INDEX_FILENAME = "index.md";
+
+export default class ObsidianPeriodicNotesViewPlugin extends Plugin {
     settings: MyPluginSettings;
+
+    /**
+     * Get a list of all the daily periodic notes in descending order.
+     * @returns
+     */
+    async getDailyPeriodicNotes() {
+        console.log("Regenerating periodic notes");
+        const folder = this.app.vault.getFolderByPath(DAILY_FOLDER_PATH);
+        if (!folder) {
+            console.log("Could not find daily folder");
+            new Notice("Could not find daily folder");
+            return;
+        }
+
+        console.log(folder);
+
+        const dailyNotes = folder.children.filter(
+            (file) => file.name !== INDEX_FILENAME
+        );
+
+        const sortedDailyNotes = [...dailyNotes].sort((a, b) => {
+            return b.name.localeCompare(a.name);
+        });
+
+        return sortedDailyNotes;
+    }
+
+    async writePeriodicNotesIndex(notes: Array<TAbstractFile>) {
+        let indexFile = this.app.vault.getFileByPath(
+            `${DAILY_FOLDER_PATH}/${INDEX_FILENAME}`
+        );
+
+        if (!indexFile) {
+            indexFile = await this.app.vault.create(
+                `${DAILY_FOLDER_PATH}/${INDEX_FILENAME}`,
+                ""
+            );
+        }
+
+        const indexPreamble = `---\ncssclasses: ['clean-embeds']\n\n---`;
+        const indexContent = notes
+            .map((note) => {
+                return `### ${note.name.replace(".md", "")}\n![[${
+                    note.name
+                }]]\n\n---`;
+            })
+            .join("\n");
+
+        await this.app.vault.modify(
+            indexFile,
+            [indexPreamble, indexContent].join("\n")
+        );
+    }
+
+    async regeneratePeriodicNotesIndex() {
+        const notes = await this.getDailyPeriodicNotes();
+        if (!notes) {
+            new Notice("Unable to find daily notes.");
+            return;
+        }
+        return this.writePeriodicNotesIndex(notes);
+    }
 
     async onload() {
         await this.loadSettings();
 
-        // This creates an icon in the left ribbon.
-        const ribbonIconEl = this.addRibbonIcon(
-            "dice",
-            "Obsidian Periodic Notes View",
-            (evt: MouseEvent) => {
-                // Called when the user clicks the icon.
-                new Notice("This is a notice!");
-            }
+        this.regeneratePeriodicNotesIndex();
+
+        this.registerView(
+            PERIODIC_NOTES_VIEW_TYPE,
+            (leaf) => new PeriodicNotesView(leaf)
         );
-        // Perform additional things with the ribbon
-        ribbonIconEl.addClass("my-plugin-ribbon-class");
 
-        // This adds a simple command that can be triggered anywhere
-        this.addCommand({
-            id: "open-sample-modal-simple",
-            name: "Open sample modal (simple)",
-            callback: () => {
-                new SampleModal(this.app).open();
-            },
-        });
-        // This adds an editor command that can perform some operation on the current editor instance
-        this.addCommand({
-            id: "sample-editor-command",
-            name: "Sample editor command",
-            editorCallback: (editor: Editor, view: MarkdownView) => {
-                console.log(editor.getSelection());
-                editor.replaceSelection("Sample Editor Command");
-            },
-        });
-        // This adds a complex command that can check whether the current state of the app allows execution of the command
-        this.addCommand({
-            id: "open-sample-modal-complex",
-            name: "Open sample modal (complex)",
-            checkCallback: (checking: boolean) => {
-                // Conditions to check
-                const markdownView =
-                    this.app.workspace.getActiveViewOfType(MarkdownView);
-                if (markdownView) {
-                    // If checking is true, we're simply "checking" if the command can be run.
-                    // If checking is false, then we want to actually perform the operation.
-                    if (!checking) {
-                        new SampleModal(this.app).open();
-                    }
-
-                    // This command will only show up in Command Palette when the check function returns true
-                    return true;
-                }
-            },
-        });
-
-        // This adds a settings tab so the user can configure various aspects of the plugin
-        this.addSettingTab(new PeriodicNotesViewSettingsTab(this.app, this));
-
-        // If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-        // Using this function will automatically remove the event listener when this plugin is disabled.
-        this.registerDomEvent(document, "click", (evt: MouseEvent) => {
-            console.log("click", evt);
-        });
-
-        // When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-        this.registerInterval(
-            window.setInterval(() => console.log("setInterval"), 5 * 60 * 1000)
-        );
+        this.app.vault.on("create", this.regeneratePeriodicNotesIndex);
+        this.app.vault.on("delete", this.regeneratePeriodicNotesIndex);
+        this.app.vault.on("rename", this.regeneratePeriodicNotesIndex);
+        this.app.vault.on("modify", this.regeneratePeriodicNotesIndex);
     }
 
     onunload() {}
@@ -103,28 +122,40 @@ export default class ObsidianPeriodicNotesView extends Plugin {
     async saveSettings() {
         await this.saveData(this.settings);
     }
-}
 
-class SampleModal extends Modal {
-    constructor(app: App) {
-        super(app);
-    }
+    async activateView() {
+        // TODO(aitskovi): Ensure that we are not opening multiple views of the same type (just focus on previous).
 
-    onOpen() {
-        const { contentEl } = this;
-        contentEl.setText("Woah!");
-    }
+        const { workspace } = this.app;
 
-    onClose() {
-        const { contentEl } = this;
-        contentEl.empty();
+        let leaf: WorkspaceLeaf | null = null;
+        const leaves = workspace.getLeavesOfType(PERIODIC_NOTES_VIEW_TYPE);
+
+        if (leaves.length > 0) {
+            // A leaf with our view already exists, use that
+            leaf = leaves[0];
+        } else {
+            // Our view could not be found in the workspace, create a new leaf
+            // in the right sidebar for it
+            leaf = workspace.getLeaf(true);
+            if (leaf === null) {
+                return;
+            }
+            await leaf.setViewState({
+                type: PERIODIC_NOTES_VIEW_TYPE,
+                active: true,
+            });
+        }
+
+        // "Reveal" the leaf in case it is in a collapsed sidebar
+        workspace.revealLeaf(leaf);
     }
 }
 
 class PeriodicNotesViewSettingsTab extends PluginSettingTab {
-    plugin: ObsidianPeriodicNotesView;
+    plugin: ObsidianPeriodicNotesViewPlugin;
 
-    constructor(app: App, plugin: ObsidianPeriodicNotesView) {
+    constructor(app: App, plugin: ObsidianPeriodicNotesViewPlugin) {
         super(app, plugin);
         this.plugin = plugin;
     }
