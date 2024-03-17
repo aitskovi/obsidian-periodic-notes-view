@@ -103,10 +103,9 @@ export default class ObsidianPeriodicNotesViewPlugin extends Plugin {
             (leaf) => new PeriodicNotesView(leaf)
         );
 
-        this.app.vault.on("create", this.regeneratePeriodicNotesIndex);
-        this.app.vault.on("delete", this.regeneratePeriodicNotesIndex);
-        this.app.vault.on("rename", this.regeneratePeriodicNotesIndex);
-        this.app.vault.on("modify", this.regeneratePeriodicNotesIndex);
+        this.app.vault.on("create", () => this.regeneratePeriodicNotesIndex());
+        this.app.vault.on("delete", () => this.regeneratePeriodicNotesIndex());
+        this.app.vault.on("rename", () => this.regeneratePeriodicNotesIndex());
     }
 
     onunload() {}
